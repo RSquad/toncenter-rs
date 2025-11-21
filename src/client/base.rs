@@ -1,16 +1,38 @@
+use core::fmt;
+
 use crate::{
     error::ToncenterError,
     models::{ApiResponse, ApiResponseResult, JsonRpcResponse, JsonRpcResult},
 };
 use log::debug;
 use reqwest::{header::HeaderMap, Client};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-#[derive(Debug)]
+#[derive(Debug, serde::Deserialize)]
+struct RpcProbe {
+    #[serde(default)]
+    ok: Option<bool>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    code: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Network {
     Mainnet,
     Testnet,
     Custom(String),
+}
+
+impl fmt::Display for Network {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Network::Mainnet => f.write_str("https://toncenter.com/api/v2/"),
+            Network::Testnet => f.write_str("https://testnet.toncenter.com/api/v2/"),
+            Network::Custom(s) => f.write_str(s),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -55,7 +77,11 @@ impl BaseApiClient {
             };
         }
 
-        let url = format!("{}{}", base_url, endpoint);
+        let url = format!(
+            "{}/{}",
+            base_url.trim_end_matches('/'),
+            endpoint.trim_start_matches('/')
+        );
         let url_with_params = reqwest::Url::parse_with_params(&url, query_params)?;
         let request_builder = match method {
             reqwest::Method::GET => self.client.get(url_with_params).headers(headers),
@@ -75,8 +101,26 @@ impl BaseApiClient {
         let response = request_builder.send().await?;
         debug!("Received response: {:?}", response);
 
+        let status = response.status();
         let response_text = response.text().await?;
         debug!("Response text: {}", response_text);
+
+        if !status.is_success() {
+            let code = status.as_u16() as u32;
+            self.handle_error(code, response_text.clone())?;
+            unreachable!("early return via handle_error");
+        }
+
+        if let Ok(probe) = serde_json::from_str::<RpcProbe>(&response_text) {
+            if probe.ok == Some(false) {
+                let code = probe.code.unwrap_or(500);
+                let msg = probe
+                    .error
+                    .unwrap_or_else(|| "Unknown RPC error".to_string());
+                self.handle_error(code, msg)?;
+                unreachable!("early return via handle_error");
+            }
+        }
 
         let response_body: T = serde_json::from_str(&response_text)?;
         debug!("Response body: {:?}", response_body);
