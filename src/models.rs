@@ -347,7 +347,7 @@ pub struct JsonRpcResponse<T> {
     pub jsonrpc: Option<String>,
     #[serde(flatten)]
     pub data: JsonRpcResult<T>,
-    pub id: serde_json::Value,
+    pub id: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
